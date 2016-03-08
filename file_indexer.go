@@ -16,10 +16,12 @@ import (
 var extensions []string
 var client *elastic.Client
 var indexName = "sources"
+var queue chan fileEntry
 
 type fileEntry struct {
 	Content string
 	Path    string
+	ID      string
 }
 
 func main() {
@@ -34,7 +36,9 @@ func main() {
 	}
 
 	checkIndex(client)
+	queue = make(chan fileEntry, 1000)
 	extensions = strings.Split(*exts, ";")
+	go indexer(client)
 	err = filepath.Walk(*rootPath, visit)
 	if err != nil {
 		log.Fatalf("error: %s", err)
@@ -71,14 +75,26 @@ func visit(path string, f os.FileInfo, err error) error {
 		log.Printf("Visited: %s\n", path)
 		fileContent := readFile(path)
 		id := md5.Sum([]byte(path))
-		fileItem := fileEntry{Content: fileContent, Path: path}
+		fileItem := fileEntry{Content: fileContent, Path: path, ID: fmt.Sprintf("%x", id)}
 		log.Printf("Indexing: id %x, path %s", id, path)
-		_, err := client.Index().Index(indexName).Type("source").Id(fmt.Sprintf("%x", id)).BodyJson(fileItem).Do()
+		queue <- fileItem
+		//_, err := client.Index().Index(indexName).Type("source").Id(fmt.Sprintf("%x", id)).BodyJson(fileItem).Do()
+		//if err != nil {
+		//	panic(err)
+		//}
+	}
+	return nil
+}
+
+func indexer(client *elastic.Client) {
+	for {
+		item := <-queue
+		log.Printf("Indexing: id %x, path %s", item.ID, item.Path)
+		_, err := client.Index().Index(indexName).Type("source").Id(item.ID).BodyJson(item).Do()
 		if err != nil {
 			panic(err)
 		}
 	}
-	return nil
 }
 
 func readFile(path string) string {
